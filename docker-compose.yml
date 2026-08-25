@@ -1,19 +1,41 @@
 services:
-  my-wishbox:
-    build:
-      context: .
-      dockerfile: Dockerfile
 
-    container_name: my-wishbox
-
+  postgres:
+    image: postgres:16-alpine
+    container_name: my-wishbox-db
     restart: unless-stopped
 
     environment:
-      NODE_ENV: production
+      POSTGRES_DB: wishbox
+      POSTGRES_USER: wishbox
+      POSTGRES_PASSWORD: wishbox_password
 
     volumes:
-      - ./auth:/app/auth
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wishbox -d wishbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  my-wishbox:
+    build: .
+    container_name: my-wishbox
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    volumes:
+      - ./auth_info:/app/auth_info
       - ./data:/app/data
 
-    stdin_open: true
-    tty: true
+
+volumes:
+  postgres_data:
