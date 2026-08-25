@@ -1,0 +1,21 @@
+AUTH_DIR=auth_info
+
+COMMAND_PREFIX=!
+
+LOG_LEVEL=info
+
+# 1 = permite mandar comandos pelo mesmo número conectado ao bot
+ALLOW_FROM_ME=1
+
+# Deixe vazio para aceitar qualquer conversa privada.
+# Para restringir:
+# ALLOWED_JIDS=5524992007353@s.whatsapp.net,5511999999999@s.whatsapp.net
+
+ALLOWED_JIDS=
+
+DATABASE_URL=
+
+DB_POOL_MAX=10
+DB_IDLE_TIMEOUT_MS=30000
+DB_CONNECTION_TIMEOUT_MS=5000
+

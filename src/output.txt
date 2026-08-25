@@ -1,0 +1,4053 @@
+./"src"/"test.py"
+import os
+src_dir = os.getcwd()
+print('src_dir:', src_dir)
+with open('output.txt', 'w') as out:
+    for root, dirs, files in os.walk(src_dir):
+        print('Walking:', root)
+        for f in files:
+            if f == 'output.txt' or f == 'da o blu blu.txt':
+                continue
+            print(f'  File: {f}')
+            filepath = os.path.join(root, f)
+            rel = os.path.relpath(filepath, src_dir)
+            header = f'./"src"/"{rel}"'
+            out.write(header + '\n')
+            with open(filepath, 'r') as inf:
+                content = inf.read()
+            out.write(content)
+            if not content.endswith('\n'):
+                out.write('\n')
+            out.write('\n')
+
+./"src"/"utils.ts"
+import type {
+    Priority,
+    WishlistItem,
+} from "./types/wishlist.js";
+
+
+export function formatMoney(
+    value: number | null,
+): string {
+
+    if (
+        value === null
+    ) {
+
+        return "—";
+    }
+
+    return value.toLocaleString(
+        "pt-BR",
+        {
+            style:
+                "currency",
+
+            currency:
+                "BRL",
+        },
+    );
+}
+
+
+export function priorityLabel(
+    priority: Priority,
+): string {
+
+    switch (
+        priority
+    ) {
+
+        case 4:
+            return "🚨 Critical";
+
+        case 3:
+            return "🔴 High";
+
+        case 2:
+            return "🟡 Medium";
+
+        default:
+            return "🟢 Low";
+    }
+}
+
+
+export function formatItem(
+    item: WishlistItem,
+): string {
+
+    const status =
+        item.bought
+            ? "✅"
+            : "▫️";
+
+    return [
+        `${status} [${item.id}] ${item.name}`,
+
+        `💰 ${formatMoney(item.price)}`,
+
+        `📂 ${item.category}`,
+
+        `${priorityLabel(item.priority)}`,
+
+        item.url
+            ? `🔗 ${item.url}`
+            : null,
+
+        item.note
+            ? `📝 ${item.note}`
+            : null,
+    ]
+        .filter(Boolean)
+        .join("\n");
+}
+
+./"src"/"index.ts"
+
+
+import { startWhatsApp } from "./whatsapp/client.js";
+
+async function main() {
+    console.log(
+        "Starting My WishBox...",
+    );
+
+    // await loadStore();
+
+    await startWhatsApp();
+}
+
+main().catch(
+    (error) => {
+        console.error(
+            "Failed to start My WishBox:",
+            error,
+        );
+
+        process.exit(1);
+    },
+);
+
+./"src"/"whatsapp/handlers.ts"
+import type {
+    WASocket,
+    WAMessage,
+} from "baileys";
+
+import {
+    resolve,
+} from "../commands/router.js";
+
+import {
+    continuePending,
+} from "../commands/commands.js";
+
+import {
+    config,
+} from "../config/config.js";
+
+import {
+    downloadImage,
+} from "../util/image.js";
+
+
+/**
+ * IDs das mensagens enviadas pelo próprio bot.
+ *
+ * Como estamos usando o próprio número do WhatsApp,
+ * mensagens digitadas pelo usuário também podem chegar
+ * com fromMe=true.
+ *
+ * Portanto, não podemos simplesmente ignorar fromMe=true.
+ */
+const sentMessageIds =
+    new Set<string>();
+
+
+/**
+ * Mensagens enviadas pelo bot organizadas por chat.
+ *
+ * Isso é usado pelo comando !clear.
+ */
+const sentMessagesByJid =
+    new Map<
+        string,
+        WAMessage[]
+    >();
+
+
+/**
+ * Guarda uma mensagem enviada pelo bot.
+ *
+ * O ID fica guardado por 60 segundos para impedir que
+ * mensagens enviadas pelo próprio bot sejam processadas
+ * novamente.
+ */
+function rememberSentMessage(
+    jid: string,
+    message: WAMessage,
+): void {
+
+    const id =
+        message.key.id;
+
+    if (!id) {
+        return;
+    }
+
+    sentMessageIds.add(id);
+
+    const messages =
+        sentMessagesByJid.get(jid) ?? [];
+
+    messages.push(message);
+
+    sentMessagesByJid.set(
+        jid,
+        messages,
+    );
+
+    setTimeout(() => {
+
+        sentMessageIds.delete(id);
+
+    }, 60_000);
+}
+
+
+/**
+ * Retorna todas as mensagens enviadas pelo bot
+ * em determinado chat.
+ */
+export function getSentMessages(
+    jid: string,
+): WAMessage[] {
+
+    return [
+        ...(
+            sentMessagesByJid.get(jid)
+            ?? []
+        ),
+    ];
+}
+
+
+/**
+ * Remove uma mensagem específica do histórico
+ * de mensagens enviadas pelo bot.
+ */
+export function forgetSentMessage(
+    jid: string,
+    messageId?: string,
+): void {
+
+    if (!messageId) {
+        return;
+    }
+
+    const messages =
+        sentMessagesByJid.get(jid);
+
+    if (!messages) {
+        return;
+    }
+
+    const filtered =
+        messages.filter(
+            (message) =>
+                message.key.id !==
+                messageId,
+        );
+
+    if (
+        filtered.length === 0
+    ) {
+
+        sentMessagesByJid.delete(
+            jid,
+        );
+
+        return;
+    }
+
+    sentMessagesByJid.set(
+        jid,
+        filtered,
+    );
+}
+
+
+/**
+ * Limpa todas as mensagens registradas de um chat.
+ */
+export function clearSentMessages(
+    jid: string,
+): void {
+
+    sentMessagesByJid.delete(
+        jid,
+    );
+}
+
+
+function extractText(
+    message: WAMessage,
+): string | null {
+
+    const content =
+        message.message;
+
+    if (!content) {
+        return null;
+    }
+
+    if (
+        content.conversation
+    ) {
+
+        return content.conversation;
+    }
+
+    if (
+        content.extendedTextMessage?.text
+    ) {
+
+        return (
+            content
+                .extendedTextMessage
+                .text
+        );
+    }
+
+    return null;
+}
+
+
+function hasImage(
+    message: WAMessage,
+): boolean {
+
+    const content =
+        message.message;
+
+    if (!content) {
+        return false;
+    }
+
+    return Boolean(
+        content.imageMessage,
+    );
+}
+
+
+function isAllowed(
+    jid: string,
+): boolean {
+
+    if (
+        config.allowedJids.length === 0
+    ) {
+
+        return true;
+    }
+
+    return config.allowedJids.includes(
+        jid,
+    );
+}
+
+
+export async function handleMessage(
+    socket: WASocket,
+    message: WAMessage,
+): Promise<void> {
+
+    const jid =
+        message.key.remoteJid;
+
+    if (!jid) {
+        return;
+    }
+
+
+    /**
+     * Ignore groups.
+     */
+    if (
+        jid.endsWith("@g.us")
+    ) {
+
+        return;
+    }
+
+
+    /**
+     * Ignore WhatsApp status.
+     */
+    if (
+        jid === "status@broadcast"
+    ) {
+
+        return;
+    }
+
+
+    /**
+     * Ignore only messages that were actually
+     * generated by the bot.
+     */
+    const messageId =
+        message.key.id;
+
+    if (
+        message.key.fromMe &&
+        messageId &&
+        sentMessageIds.has(
+            messageId,
+        )
+    ) {
+
+        console.log(
+            `[IGNORED] Own bot message: ${messageId}`,
+        );
+
+        return;
+    }
+
+
+    /**
+     * Optional JID whitelist.
+     */
+    if (
+        !isAllowed(jid)
+    ) {
+
+        console.log(
+            `[IGNORED] Unauthorized JID: ${jid}`,
+        );
+
+        return;
+    }
+
+
+    const text =
+        extractText(message);
+
+    const image =
+        hasImage(message);
+
+    console.log(
+        `[MESSAGE] ${jid} | fromMe=${message.key.fromMe} | text=${JSON.stringify(text)} | image=${image}`,
+    );
+
+
+    if (!text) {
+        return;
+    }
+
+
+    /**
+     * Reply helper.
+     *
+     * Se imageUrl existir:
+     *
+     * - baixa a imagem;
+     * - envia a imagem pelo WhatsApp;
+     * - usa o texto como caption;
+     *
+     * Caso contrário envia uma mensagem normal.
+     */
+    const reply = async (
+        responseText: string,
+        options?: {
+            imageUrl?: string | null;
+        },
+    ): Promise<void> => {
+
+        /**
+         * Mensagem com imagem.
+         */
+        if (
+            options?.imageUrl
+        ) {
+
+            try {
+
+                const imageBuffer =
+                    await downloadImage(
+                        options.imageUrl,
+                    );
+
+                const sent =
+                    await socket.sendMessage(
+                        jid,
+                        {
+                            image:
+                                imageBuffer,
+
+                            caption:
+                                responseText,
+                        },
+                    );
+
+                if (sent) {
+
+                    rememberSentMessage(
+                        jid,
+                        sent,
+                    );
+                }
+
+                return;
+
+            } catch (
+                error
+            ) {
+
+                console.error(
+                    `[IMAGE ERROR] Failed to send image for ${jid}:`,
+                    error,
+                );
+
+                /**
+                 * Se a imagem falhar,
+                 * ainda enviamos os dados.
+                 */
+                const fallbackText =
+                    [
+                        responseText,
+                        "",
+                        `⚠️ Image could not be loaded.`,
+                        `🖼️ ${options.imageUrl}`,
+                    ].join("\n");
+
+                const sent =
+                    await socket.sendMessage(
+                        jid,
+                        {
+                            text:
+                                fallbackText,
+                        },
+                    );
+
+                if (sent) {
+
+                    rememberSentMessage(
+                        jid,
+                        sent,
+                    );
+                }
+
+                return;
+            }
+        }
+
+
+        /**
+         * Mensagem normal.
+         */
+        const sent =
+            await socket.sendMessage(
+                jid,
+                {
+                    text:
+                        responseText,
+                },
+            );
+
+        if (sent) {
+
+            rememberSentMessage(
+                jid,
+                sent,
+            );
+        }
+    };
+
+
+    /**
+     * Guided registration.
+     */
+    if (
+        !text.startsWith(
+            config.prefix,
+        )
+    ) {
+
+        const handled =
+            await continuePending(
+                {
+                    socket,
+                    message,
+                    jid,
+                    args: [],
+                    rest: text,
+                    reply,
+                },
+                text,
+            );
+
+        if (handled) {
+            return;
+        }
+
+        return;
+    }
+
+
+    /**
+     * Remove command prefix.
+     */
+    const commandLine =
+        text
+            .slice(
+                config.prefix.length,
+            )
+            .trim();
+
+    if (!commandLine) {
+        return;
+    }
+
+
+    const parts =
+        commandLine.split(
+            /\s+/,
+        );
+
+    const commandName =
+        parts[0]
+            ?.toLowerCase();
+
+    if (!commandName) {
+        return;
+    }
+
+
+    const args =
+        parts.slice(1);
+
+    const rest =
+        args.join(" ");
+
+    console.log(
+        `[COMMAND] ${commandName}`,
+    );
+
+
+    const command =
+        resolve(commandName);
+
+    if (!command) {
+
+        await reply(
+            `❌ Unknown command: ${config.prefix}${commandName}\n\nUse ${config.prefix}help to see available commands.`,
+        );
+
+        return;
+    }
+
+
+    try {
+
+        await command.handler({
+
+            socket,
+            message,
+            jid,
+            args,
+            rest,
+            reply,
+
+        });
+
+        console.log(
+            `[DONE] ${commandName}`,
+        );
+
+    } catch (
+        error
+    ) {
+
+        console.error(
+            `[ERROR] ${commandName}:`,
+            error,
+        );
+
+        await reply(
+            "❌ Error processing command.",
+        );
+    }
+}
+
+./"src"/"whatsapp/client.ts.backup"
+import makeWASocket, {
+    DisconnectReason,
+    useMultiFileAuthState,
+} from "baileys";
+
+import P from "pino";
+import qrcode from "qrcode-terminal";
+
+import { handleMessage } from "./handlers.js";
+
+export async function connectToWhatsApp() {
+    const { state, saveCreds } =
+        await useMultiFileAuthState("auth_info");
+
+    const socket = makeWASocket({
+        auth: state,
+        logger: P({ level: "silent" }),
+    });
+
+    socket.ev.on("creds.update", saveCreds);
+
+    socket.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") {
+            return;
+        }
+
+        for (const message of messages) {
+            if (!message.message) {
+                continue;
+            }
+
+            if (message.key.fromMe) {
+                continue;
+            }
+
+            await handleMessage(message);
+        }
+    });
+
+    socket.ev.on("connection.update", (update) => {
+        const {
+            connection,
+            lastDisconnect,
+            qr,
+        } = update;
+
+        if (qr) {
+            console.clear();
+
+            console.log("Scan this QR Code with WhatsApp:\n");
+
+            qrcode.generate(qr, {
+                small: true,
+            });
+        }
+
+        if (connection === "open") {
+            console.log(
+                "\nWhatsApp connected successfully."
+            );
+        }
+
+        if (connection === "close") {
+            const error =
+                lastDisconnect?.error as any;
+
+            const statusCode =
+                error?.output?.statusCode;
+
+            const shouldReconnect =
+                statusCode !== DisconnectReason.loggedOut;
+
+            console.log(
+                `Connection closed. Reconnect: ${shouldReconnect}`
+            );
+
+            if (shouldReconnect) {
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 3000);
+            }
+        }
+    });
+
+    return socket;
+}
+
+./"src"/"whatsapp/client.ts"
+import makeWASocket, {
+    DisconnectReason,
+    useMultiFileAuthState,
+    type WASocket,
+} from "baileys";
+
+import P from "pino";
+import qrcode from "qrcode-terminal";
+
+import { config } from "../config/config.js";
+
+import {
+    handleMessage,
+} from "./handlers.js";
+
+const baileysLogger =
+    P({
+        level: "silent",
+    });
+
+let activeSocket:
+    WASocket | null = null;
+
+let reconnectAttempts = 0;
+
+function getReconnectDelay(): number {
+    const baseDelay =
+        config.reconnect.baseDelayMs;
+
+    const maxDelay =
+        config.reconnect.maxDelayMs;
+
+    return Math.min(
+        baseDelay *
+            Math.pow(
+                2,
+                reconnectAttempts,
+            ),
+        maxDelay,
+    );
+}
+
+function isRelevantJid(
+    jid: string,
+): boolean {
+    if (!jid) {
+        return false;
+    }
+
+    if (
+        jid ===
+        "status@broadcast"
+    ) {
+        return false;
+    }
+
+    if (
+        jid.endsWith("@g.us")
+    ) {
+        return false;
+    }
+
+    if (
+        !jid.endsWith(
+            "@s.whatsapp.net",
+        ) &&
+        !jid.endsWith(
+            "@lid",
+        )
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+export async function startWhatsApp(): Promise<WASocket> {
+    const {
+        state,
+        saveCreds,
+    } =
+        await useMultiFileAuthState(
+            config.authDir,
+        );
+
+    const socket =
+        makeWASocket({
+            auth: state,
+
+            logger:
+                baileysLogger,
+
+            syncFullHistory:
+                false,
+
+            markOnlineOnConnect:
+                false,
+
+            generateHighQualityLinkPreview:
+                false,
+        });
+
+    activeSocket =
+        socket;
+
+    socket.ev.on(
+        "creds.update",
+        saveCreds,
+    );
+
+    socket.ev.on(
+        "messages.upsert",
+        async (
+            event,
+        ) => {
+            if (
+                activeSocket !==
+                socket
+            ) {
+                return;
+            }
+
+            for (
+                const message
+                of event.messages
+            ) {
+                const jid =
+                    message.key
+                        .remoteJid;
+
+                if (
+                    !jid ||
+                    !isRelevantJid(
+                        jid,
+                    )
+                ) {
+                    continue;
+                }
+
+                if (
+                    !message.message
+                ) {
+                    continue;
+                }
+
+                console.log(
+                    `[MESSAGE EVENT] ${jid} | fromMe=${message.key.fromMe}`,
+                );
+
+                try {
+                    await handleMessage(
+                        socket,
+                        message,
+                    );
+                } catch (
+                    error
+                ) {
+                    console.error(
+                        "[ERROR] Message handler failed:",
+                        error,
+                    );
+                }
+            }
+        },
+    );
+
+    socket.ev.on(
+        "connection.update",
+        (
+            update,
+        ) => {
+            if (
+                activeSocket !==
+                socket
+            ) {
+                return;
+            }
+
+            const {
+                connection,
+                lastDisconnect,
+                qr,
+            } =
+                update;
+
+            if (qr) {
+                console.log(
+                    "\nScan the QR Code to connect WhatsApp.\n",
+                );
+
+                qrcode.generate(
+                    qr,
+                    {
+                        small: true,
+                    },
+                );
+            }
+
+            if (
+                connection ===
+                "open"
+            ) {
+                reconnectAttempts =
+                    0;
+
+                console.log(
+                    "\nWhatsApp connected and listening for commands.\n",
+                );
+
+                return;
+            }
+
+            if (
+                connection !==
+                "close"
+            ) {
+                return;
+            }
+
+            const statusCode =
+                (
+                    lastDisconnect
+                        ?.error as any
+                )?.output
+                    ?.statusCode;
+
+            if (
+                activeSocket ===
+                socket
+            ) {
+                activeSocket =
+                    null;
+            }
+
+            if (
+                statusCode ===
+                DisconnectReason.loggedOut
+            ) {
+                console.error(
+                    `Logged out. Delete "${config.authDir}" and connect again.`,
+                );
+
+                return;
+            }
+
+            const delay =
+                getReconnectDelay();
+
+            reconnectAttempts +=
+                1;
+
+            console.log(
+                `Connection closed. Reconnecting in ${delay / 1000}s...`,
+            );
+
+            setTimeout(
+                () => {
+                    startWhatsApp()
+                        .catch(
+                            (
+                                error,
+                            ) => {
+                                console.error(
+                                    "Reconnect failed:",
+                                    error,
+                                );
+                            },
+                        );
+                },
+                delay,
+            );
+        },
+    );
+
+    return socket;
+}
+
+./"src"/"whatsapp/client.ts.logging"
+import makeWASocket, {
+    DisconnectReason,
+    useMultiFileAuthState,
+} from "baileys";
+
+import P from "pino";
+import qrcode from "qrcode-terminal";
+
+import { handleMessage } from "./handlers.js";
+
+export async function connectToWhatsApp() {
+    const { state, saveCreds } =
+        await useMultiFileAuthState("auth_info");
+
+    const socket = makeWASocket({
+        auth: state,
+        logger: P({ level: "silent" }),
+    });
+
+    socket.ev.on("creds.update", saveCreds);
+
+    socket.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") {
+            return;
+        }
+
+        for (const message of messages) {
+            if (!message.message) {
+                continue;
+            }
+
+            if (message.key.fromMe) {
+                continue;
+            }
+
+            await handleMessage(message);
+        }
+    });
+
+    socket.ev.on("connection.update", (update) => {
+        const {
+            connection,
+            lastDisconnect,
+            qr,
+        } = update;
+
+        if (qr) {
+            console.clear();
+
+            console.log("Scan this QR Code with WhatsApp:\n");
+
+            qrcode.generate(qr, {
+                small: true,
+            });
+        }
+
+        if (connection === "open") {
+            console.log(
+                "\nWhatsApp connected successfully."
+            );
+        }
+
+        if (connection === "close") {
+            const error =
+                lastDisconnect?.error as any;
+
+            const statusCode =
+                error?.output?.statusCode;
+
+            const shouldReconnect =
+                statusCode !== DisconnectReason.loggedOut;
+
+            console.log(
+                `Connection closed. Reconnect: ${shouldReconnect}`
+            );
+
+            if (shouldReconnect) {
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 3000);
+            }
+        }
+    });
+
+    return socket;
+}
+
+./"src"/"config/config.ts"
+export const config = {
+    authDir:
+        process.env.AUTH_DIR ??
+        "auth_info",
+
+    prefix:
+        process.env.COMMAND_PREFIX ??
+        "!",
+
+    logLevel:
+        process.env.LOG_LEVEL ??
+        "info",
+
+    databaseUrl:
+        process.env.DATABASE_URL ??
+        "postgresql://wishbox:noob@127.0.0.1:5432/wishbox",
+
+    allowFromMe:
+        process.env.ALLOW_FROM_ME === "1",
+
+    allowedJids:
+        (process.env.ALLOWED_JIDS ?? "")
+            .split(",")
+            .map((jid) => jid.trim())
+            .filter(Boolean),
+
+    reconnect: {
+        baseDelayMs: 2_000,
+        maxDelayMs: 30_000,
+    },
+
+    messages: {
+        maxSelfMessageAgeSeconds: 15,
+        processedCacheTtlMs:
+            10 * 60 * 1000,
+    },
+} as const;
+
+./"src"/"types/wishlist.ts"
+export type Priority =
+    1 | 2 | 3 | 4;
+
+export interface WishlistItem {
+    id: number;
+
+    name: string;
+
+    price: number | null;
+
+    url: string | null;
+
+    imageUrl: string | null;
+
+    category: string;
+
+    priority: Priority;
+
+    bought: boolean;
+
+    note: string | null;
+
+    createdAt: string;
+
+    updatedAt: string;
+}
+
+export interface UserData {
+    id: number;
+
+    jid: string;
+
+    budget: number | null;
+}
+
+./"src"/"db/migrate.ts"
+import { pool } from "./client.js";
+
+export async function migrate(): Promise<void> {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+
+            jid VARCHAR(255) NOT NULL UNIQUE,
+
+            budget NUMERIC(14, 2),
+
+            created_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS wishlist_items (
+            id BIGSERIAL PRIMARY KEY,
+
+            user_id BIGINT NOT NULL,
+
+            name VARCHAR(500) NOT NULL,
+
+            price NUMERIC(14, 2),
+
+            url TEXT,
+
+            image_url TEXT,
+
+            category VARCHAR(100)
+                NOT NULL DEFAULT 'general',
+
+            priority SMALLINT
+                NOT NULL DEFAULT 1,
+
+            bought BOOLEAN
+                NOT NULL DEFAULT FALSE,
+
+            note TEXT,
+
+            created_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW(),
+
+            CONSTRAINT fk_wishlist_user
+                FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE,
+
+            CONSTRAINT wishlist_priority_check
+                CHECK (priority BETWEEN 1 AND 4),
+
+            CONSTRAINT wishlist_price_check
+                CHECK (
+                    price IS NULL
+                    OR price >= 0
+                )
+        );
+
+        CREATE TABLE IF NOT EXISTS undo_snapshots (
+            id BIGSERIAL PRIMARY KEY,
+
+            user_id BIGINT NOT NULL,
+
+            snapshot_data JSONB NOT NULL,
+
+            created_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW(),
+
+            CONSTRAINT fk_undo_user
+                FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_wishlist_user_id
+            ON wishlist_items(user_id);
+
+        CREATE INDEX IF NOT EXISTS idx_wishlist_user_category
+            ON wishlist_items(user_id, category);
+
+        CREATE INDEX IF NOT EXISTS idx_wishlist_user_priority
+            ON wishlist_items(user_id, priority);
+
+        CREATE INDEX IF NOT EXISTS idx_wishlist_user_bought
+            ON wishlist_items(user_id, bought);
+
+        CREATE INDEX IF NOT EXISTS idx_undo_user
+            ON undo_snapshots(user_id);
+
+        CREATE INDEX IF NOT EXISTS idx_undo_user_created
+            ON undo_snapshots(user_id, created_at);
+    `);
+
+    console.log("[DB] Database schema ready.");
+}
+
+./"src"/"db/howtouse.txt"
+CREATE USER wishbox WITH PASSWORD '';
+
+CREATE DATABASE wishbox OWNER wishbox;
+
+psql -U wishbox -d wishbox
+
+./"src"/"db/client.ts"
+import pg from "pg";
+
+import { config } from "../config/config.js";
+
+const { Pool } = pg;
+
+export const pool = new Pool({
+    connectionString: config.databaseUrl,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+});
+
+pool.on("error", (error) => {
+    console.error(
+        "[DB] Unexpected PostgreSQL error:",
+        error,
+    );
+});
+
+export async function closeDatabase(): Promise<void> {
+    await pool.end();
+}
+
+./"src"/"db/scma.sql"
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+
+    jid VARCHAR(255) NOT NULL UNIQUE,
+
+    budget NUMERIC(14, 2),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS wishlist_items (
+    id BIGSERIAL PRIMARY KEY,
+
+    user_id BIGINT NOT NULL,
+
+    name VARCHAR(500) NOT NULL,
+
+    price NUMERIC(14, 2),
+
+    url TEXT,
+
+    image_url TEXT,
+
+    category VARCHAR(100) NOT NULL DEFAULT 'general',
+
+    priority SMALLINT NOT NULL DEFAULT 1,
+
+    bought BOOLEAN NOT NULL DEFAULT FALSE,
+
+    note TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_wishlist_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT wishlist_priority_check
+        CHECK (
+            priority BETWEEN 1 AND 4
+        ),
+
+    CONSTRAINT wishlist_price_check
+        CHECK (
+            price IS NULL OR price >= 0
+        )
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_user_id
+    ON wishlist_items(user_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_user_category
+    ON wishlist_items(user_id, category);
+
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_user_priority
+    ON wishlist_items(user_id, priority);
+
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_user_bought
+    ON wishlist_items(user_id, bought);
+
+
+CREATE INDEX IF NOT EXISTS idx_wishlist_user_name
+    ON wishlist_items(user_id, name);
+
+./"src"/"db/repositories/undo.ts"
+import { pool } from "../client.js";
+
+import type { WishlistItem } from "../../types/wishlist.js";
+
+export type UndoAction =
+    | {
+        type: "delete";
+        item: WishlistItem;
+    }
+    | {
+        type: "update";
+        itemId: number;
+        before: WishlistItem;
+    }
+    | {
+        type: "create";
+        item: WishlistItem;
+    }
+    | {
+        type: "batch_delete";
+        items: WishlistItem[];
+    }
+    | {
+        type: "batch_update";
+        items: Array<{
+            itemId: number;
+            before: WishlistItem;
+        }>;
+    };
+
+export async function saveUndo(
+    userId: number,
+    action: UndoAction,
+): Promise<void> {
+    await pool.query(
+        `
+        INSERT INTO undo_snapshots (
+            user_id,
+            snapshot_data
+        )
+        VALUES ($1, $2::jsonb)
+        `,
+        [
+            userId,
+            JSON.stringify(action),
+        ],
+    );
+}
+
+export async function consumeUndo(
+    userId: number,
+): Promise<UndoAction | null> {
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const result = await client.query(
+            `
+            SELECT
+                id,
+                snapshot_data
+            FROM undo_snapshots
+            WHERE user_id = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [userId],
+        );
+
+        if (result.rows.length === 0) {
+            await client.query("COMMIT");
+            return null;
+        }
+
+        const row = result.rows[0];
+
+        await client.query(
+            `
+            DELETE FROM undo_snapshots
+            WHERE id = $1
+            `,
+            [row.id],
+        );
+
+        await client.query("COMMIT");
+
+        return row.snapshot_data as UndoAction;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+./"src"/"db/repositories/wishlist.ts"
+import { pool } from "../client.js";
+
+import type {
+    Priority,
+    WishlistItem,
+} from "../../types/wishlist.js";
+
+interface DbItem {
+    id: string;
+    user_id: string;
+    name: string;
+    price: string | null;
+    url: string | null;
+    image_url: string | null;
+    category: string;
+    priority: number;
+    bought: boolean;
+    note: string | null;
+    created_at: Date;
+    updated_at: Date;
+}
+
+function mapItem(
+    row: DbItem,
+): WishlistItem {
+    return {
+        id: Number(row.id),
+
+        name: row.name,
+
+        price:
+            row.price === null
+                ? null
+                : Number(row.price),
+
+        url: row.url,
+
+        imageUrl: row.image_url,
+
+        category: row.category,
+
+        priority:
+            row.priority as Priority,
+
+        bought: row.bought,
+
+        note: row.note,
+
+        createdAt:
+            row.created_at.toISOString(),
+
+        updatedAt:
+            row.updated_at.toISOString(),
+    };
+}
+
+export async function createItem(
+    userId: number,
+    data: {
+        name: string;
+        price?: number | null;
+        url?: string | null;
+        imageUrl?: string | null;
+        category?: string;
+        priority?: Priority;
+        note?: string | null;
+    },
+): Promise<WishlistItem> {
+    const result =
+        await pool.query<DbItem>(
+            `
+            INSERT INTO wishlist_items (
+                user_id,
+                name,
+                price,
+                url,
+                image_url,
+                category,
+                priority,
+                bought,
+                note
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7,
+                FALSE,
+                $8
+            )
+            RETURNING *
+            `,
+            [
+                userId,
+                data.name.trim(),
+                data.price ?? null,
+                data.url ?? null,
+                data.imageUrl ?? null,
+                data.category
+                    ?.trim()
+                    .toLowerCase() ??
+                    "general",
+                data.priority ?? 1,
+                data.note ?? null,
+            ],
+        );
+
+    return mapItem(result.rows[0]);
+}
+
+export async function findItem(
+    userId: number,
+    itemId: number,
+): Promise<WishlistItem | null> {
+    const result =
+        await pool.query<DbItem>(
+            `
+            SELECT *
+            FROM wishlist_items
+            WHERE user_id = $1
+              AND id = $2
+            `,
+            [userId, itemId],
+        );
+
+    if (!result.rows[0]) {
+        return null;
+    }
+
+    return mapItem(result.rows[0]);
+}
+
+export async function listItems(
+    userId: number,
+): Promise<WishlistItem[]> {
+    const result =
+        await pool.query<DbItem>(
+            `
+            SELECT *
+            FROM wishlist_items
+            WHERE user_id = $1
+            ORDER BY
+                priority DESC,
+                id ASC
+            `,
+            [userId],
+        );
+
+    return result.rows.map(mapItem);
+}
+
+export async function deleteItem(
+    userId: number,
+    itemId: number,
+): Promise<WishlistItem | null> {
+    const result =
+        await pool.query<DbItem>(
+            `
+            DELETE FROM wishlist_items
+            WHERE user_id = $1
+              AND id = $2
+            RETURNING *
+            `,
+            [userId, itemId],
+        );
+
+    if (!result.rows[0]) {
+        return null;
+    }
+
+    return mapItem(result.rows[0]);
+}
+
+export async function updateItem(
+    userId: number,
+    itemId: number,
+    changes: Partial<{
+        name: string;
+        price: number | null;
+        url: string | null;
+        imageUrl: string | null;
+        category: string;
+        priority: Priority;
+        bought: boolean;
+        note: string | null;
+    }>,
+): Promise<WishlistItem | null> {
+    const item =
+        await findItem(
+            userId,
+            itemId,
+        );
+
+    if (!item) {
+        return null;
+    }
+
+    const updated = {
+        name:
+            changes.name ??
+            item.name,
+
+        price:
+            changes.price !== undefined
+                ? changes.price
+                : item.price,
+
+        url:
+            changes.url !== undefined
+                ? changes.url
+                : item.url,
+
+        imageUrl:
+            changes.imageUrl !== undefined
+                ? changes.imageUrl
+                : item.imageUrl,
+
+        category:
+            changes.category ??
+            item.category,
+
+        priority:
+            changes.priority ??
+            item.priority,
+
+        bought:
+            changes.bought ??
+            item.bought,
+
+        note:
+            changes.note !== undefined
+                ? changes.note
+                : item.note,
+    };
+
+    const result =
+        await pool.query<DbItem>(
+            `
+            UPDATE wishlist_items
+            SET
+                name = $1,
+                price = $2,
+                url = $3,
+                image_url = $4,
+                category = $5,
+                priority = $6,
+                bought = $7,
+                note = $8,
+                updated_at = NOW()
+            WHERE user_id = $9
+              AND id = $10
+            RETURNING *
+            `,
+            [
+                updated.name,
+                updated.price,
+                updated.url,
+                updated.imageUrl,
+                updated.category,
+                updated.priority,
+                updated.bought,
+                updated.note,
+                userId,
+                itemId,
+            ],
+        );
+
+    return mapItem(result.rows[0]);
+}
+
+export async function searchItems(
+    userId: number,
+    term: string,
+): Promise<WishlistItem[]> {
+    const result =
+        await pool.query<DbItem>(
+            `
+            SELECT *
+            FROM wishlist_items
+            WHERE user_id = $1
+              AND (
+                    name ILIKE $2
+                    OR category ILIKE $2
+                    OR note ILIKE $2
+              )
+            ORDER BY id ASC
+            `,
+            [
+                userId,
+                `%${term}%`,
+            ],
+        );
+
+    return result.rows.map(mapItem);
+}
+
+export async function restoreItem(
+    userId: number,
+    item: WishlistItem,
+): Promise<WishlistItem> {
+
+    const result =
+        await pool.query<DbItem>(
+            `
+            INSERT INTO wishlist_items (
+                id,
+                user_id,
+                name,
+                price,
+                url,
+                image_url,
+                category,
+                priority,
+                bought,
+                note,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7,
+                $8,
+                $9,
+                $10,
+                $11,
+                NOW()
+            )
+            RETURNING *
+            `,
+            [
+                item.id,
+                userId,
+                item.name,
+                item.price,
+                item.url,
+                item.imageUrl,
+                item.category,
+                item.priority,
+                item.bought,
+                item.note,
+                item.createdAt,
+            ],
+        );
+
+    return mapItem(
+        result.rows[0],
+    );
+}
+
+./"src"/"db/repositories/users.ts"
+import { pool } from "../client.js";
+
+export interface DbUser {
+    id: number;
+    jid: string;
+    budget: number | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+function mapUser(
+    row: any,
+): DbUser {
+    return {
+        id: Number(row.id),
+        jid: row.jid,
+        budget:
+            row.budget === null
+                ? null
+                : Number(row.budget),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+export async function getOrCreateUser(
+    jid: string,
+): Promise<DbUser> {
+    const result =
+        await pool.query(
+            `
+            INSERT INTO users (jid)
+            VALUES ($1)
+            ON CONFLICT (jid)
+            DO UPDATE SET
+                updated_at = NOW()
+            RETURNING
+                id,
+                jid,
+                budget,
+                created_at,
+                updated_at
+            `,
+            [jid],
+        );
+
+    return mapUser(result.rows[0]);
+}
+
+export async function getUser(
+    jid: string,
+): Promise<DbUser> {
+    return getOrCreateUser(jid);
+}
+
+export async function updateBudget(
+    userId: number,
+    budget: number | null,
+): Promise<void> {
+    await pool.query(
+        `
+        UPDATE users
+        SET
+            budget = $1,
+            updated_at = NOW()
+        WHERE id = $2
+        `,
+        [budget, userId],
+    );
+}
+
+./"src"/"util/image.ts"
+export async function downloadImage(
+    url: string,
+): Promise<Buffer> {
+
+    const response =
+        await fetch(
+            url,
+            {
+                redirect: "follow",
+            },
+        );
+
+    if (!response.ok) {
+        throw new Error(
+            `Failed to download image: HTTP ${response.status}`,
+        );
+    }
+
+    const contentType =
+        response.headers.get(
+            "content-type",
+        );
+
+    if (
+        contentType &&
+        !contentType
+            .toLowerCase()
+            .startsWith("image/")
+    ) {
+        throw new Error(
+            `URL did not return an image: ${contentType}`,
+        );
+    }
+
+    const contentLength =
+        response.headers.get(
+            "content-length",
+        );
+
+    if (contentLength) {
+
+        const size =
+            Number(contentLength);
+
+        const maxSize =
+            10 * 1024 * 1024;
+
+        if (
+            Number.isFinite(size) &&
+            size > maxSize
+        ) {
+            throw new Error(
+                "Image is larger than 10 MB.",
+            );
+        }
+    }
+
+    const arrayBuffer =
+        await response.arrayBuffer();
+
+    const buffer =
+        Buffer.from(arrayBuffer);
+
+    if (
+        buffer.length >
+        10 * 1024 * 1024
+    ) {
+        throw new Error(
+            "Image is larger than 10 MB.",
+        );
+    }
+
+    return buffer;
+}
+
+./"src"/"util/logger.ts"
+import P from "pino";
+import { config } from "../config/config.js";
+
+export const logger = P({
+    level: config.logLevel,
+    transport:
+        process.env.NODE_ENV === "production"
+            ? undefined
+            : { target: "pino-pretty", options: { colorize: true } },
+});
+
+// Logger silencioso para o Baileys (ele é muito verboso)
+export const baileysLogger = P({ level: "silent" });
+
+./"src"/"commands/commands.ts"
+import { config } from "../config/config.js";
+
+import {
+    saveUndo,
+    consumeUndo,
+} from "../db/repositories/undo.js";
+
+import type {
+    Priority,
+    WishlistItem,
+} from "../types/wishlist.js";
+
+import {
+    list,
+    register,
+    type CommandContext,
+} from "./router.js";
+
+import {
+    getOrCreateUser,
+    updateBudget,
+} from "../db/repositories/users.js";
+
+import {
+    createItem,
+    deleteItem,
+    findItem,
+    listItems,
+    searchItems,
+    updateItem,
+    restoreItem,
+} from "../db/repositories/wishlist.js";
+
+import {
+    formatItem,
+    formatMoney,
+    priorityLabel,
+} from "../utils.js";
+
+import {
+    clearSentMessages,
+    forgetSentMessage,
+    getSentMessages,
+} from "../whatsapp/handlers.js";
+
+
+type RegisterStep =
+    | "name"
+    | "price"
+    | "url"
+    | "image"
+    | "category"
+    | "priority"
+    | "note";
+
+
+interface RegisterDraft {
+    name?: string;
+    price?: number | null;
+    url?: string | null;
+    imageUrl?: string | null;
+    category?: string;
+    priority?: Priority;
+    note?: string | null;
+}
+
+
+interface RegisterFlow {
+    step: RegisterStep;
+    draft: RegisterDraft;
+}
+
+
+const pending =
+    new Map<string, RegisterFlow>();
+
+
+function parsePrice(
+    value?: string,
+): number | null {
+
+    if (!value) {
+        return null;
+    }
+
+    const normalized =
+        value
+            .trim()
+            .replace(/R\$\s?/gi, "")
+            .replace(/\./g, "")
+            .replace(",", ".");
+
+    const number =
+        Number(normalized);
+
+    return Number.isFinite(number)
+        ? number
+        : null;
+}
+
+
+function parsePriority(
+    value?: string,
+): Priority | null {
+
+    const number =
+        Number(value);
+
+    if (
+        number === 1 ||
+        number === 2 ||
+        number === 3 ||
+        number === 4
+    ) {
+        return number;
+    }
+
+    return null;
+}
+
+
+/**
+ * Extracts valid positive integer IDs.
+ *
+ * Supports:
+ *
+ * !delete 1 2 3
+ * !delete 1,2,3
+ * !delete 1, 2, 3
+ */
+function parseIds(
+    args: string[],
+): number[] {
+
+    return [
+        ...new Set(
+            args
+                .flatMap(
+                    (arg) =>
+                        arg.split(","),
+                )
+                .map(
+                    (value) =>
+                        Number(value.trim()),
+                )
+                .filter(
+                    (id) =>
+                        Number.isInteger(id) &&
+                        id > 0,
+                ),
+        ),
+    ];
+}
+
+
+/**
+ * Checks whether an argument consists exclusively
+ * of valid IDs.
+ *
+ * Used by !move to determine where the category starts.
+ */
+function isIdArgument(
+    value: string,
+): boolean {
+
+    const parts =
+        value.split(",");
+
+    return parts.every(
+        (part) => {
+            const id =
+                Number(part.trim());
+
+            return (
+                Number.isInteger(id) &&
+                id > 0
+            );
+        },
+    );
+}
+
+
+function requireId(
+    ctx: CommandContext,
+): number | null {
+    const id = Number(
+        ctx.args[0],
+    );
+
+    return Number.isInteger(id) &&
+        id > 0
+        ? id
+        : null;
+}
+
+function parseIds(
+    args: string[],
+): number[] {
+    return [
+        ...new Set(
+            args
+                .flatMap(
+                    (arg) =>
+                        arg.split(","),
+                )
+                .map(
+                    (value) =>
+                        Number(
+                            value.trim(),
+                        ),
+                )
+                .filter(
+                    (id) =>
+                        Number.isInteger(id) &&
+                        id > 0,
+                ),
+        ),
+    ];
+}
+
+
+async function getDbUser(
+    jid: string,
+) {
+    return getOrCreateUser(jid);
+}
+
+
+export function getPending(
+    jid: string,
+): RegisterFlow | undefined {
+
+    return pending.get(jid);
+}
+
+
+export async function continuePending(
+    ctx: CommandContext,
+    text: string,
+): Promise<boolean> {
+
+    const flow =
+        pending.get(ctx.jid);
+
+    if (!flow) {
+        return false;
+    }
+
+    const value =
+        text.trim();
+
+    switch (flow.step) {
+
+        case "name": {
+
+            if (!value) {
+                await ctx.reply(
+                    "Name cannot be empty.",
+                );
+
+                return true;
+            }
+
+            flow.draft.name =
+                value;
+
+            flow.step =
+                "price";
+
+            await ctx.reply(
+                "Price? Send - to skip.",
+            );
+
+            return true;
+        }
+
+
+        case "price": {
+
+            flow.draft.price =
+                value === "-"
+                    ? null
+                    : parsePrice(value);
+
+            if (
+                value !== "-" &&
+                flow.draft.price === null
+            ) {
+
+                await ctx.reply(
+                    "Invalid price. Example: 199.90 or 199,90",
+                );
+
+                return true;
+            }
+
+            flow.step =
+                "url";
+
+            await ctx.reply(
+                "Product URL? Send - to skip.",
+            );
+
+            return true;
+        }
+
+
+        case "url": {
+
+            flow.draft.url =
+                value === "-"
+                    ? null
+                    : value;
+
+            flow.step =
+                "image";
+
+            await ctx.reply(
+                "Image URL? Send - to skip.",
+            );
+
+            return true;
+        }
+
+
+        case "image": {
+
+            flow.draft.imageUrl =
+                value === "-"
+                    ? null
+                    : value;
+
+            flow.step =
+                "category";
+
+            await ctx.reply(
+                "Category? Example: computer, clothes, car. Send - for nonclass.",
+            );
+
+            return true;
+        }
+
+
+        case "category": {
+
+            flow.draft.category =
+                value === "-"
+                    ? "nonclass"
+                    : value.toLowerCase();
+
+            flow.step =
+                "priority";
+
+            await ctx.reply(
+                [
+                    "Priority / necessity:",
+                    "1 🟢 Low",
+                    "2 🟡 Medium",
+                    "3 🔴 High",
+                    "4 🚨 Critical",
+                ].join("\n"),
+            );
+
+            return true;
+        }
+
+
+        case "priority": {
+
+            const priority =
+                parsePriority(value);
+
+            if (!priority) {
+
+                await ctx.reply(
+                    "Choose 1, 2, 3 or 4.",
+                );
+
+                return true;
+            }
+
+            flow.draft.priority =
+                priority;
+
+            flow.step =
+                "note";
+
+            await ctx.reply(
+                "Note? Send - to skip.",
+            );
+
+            return true;
+        }
+
+
+        case "note": {
+
+            flow.draft.note =
+                value === "-"
+                    ? null
+                    : value;
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const item =
+                await createItem(
+                    user.id,
+                    {
+                        name:
+                            flow.draft.name!,
+
+                        price:
+                            flow.draft.price,
+
+                        url:
+                            flow.draft.url,
+
+                        imageUrl:
+                            flow.draft.imageUrl,
+
+                        category:
+                            flow.draft.category,
+
+                        priority:
+                            flow.draft.priority,
+
+                        note:
+                            flow.draft.note,
+                    },
+                );
+
+            pending.delete(ctx.jid);
+
+            await ctx.reply(
+                `Added:\n\n${formatItem(item)}`,
+                {
+                    imageUrl:
+                        item.imageUrl,
+                },
+            );
+
+            return true;
+        }
+    }
+}
+
+
+/* =========================================================
+ * PING
+ * ========================================================= */
+
+register({
+    name: "ping",
+
+    usage:
+        "!ping",
+
+    description:
+        "Tests the bot connection",
+
+    handler:
+        async (ctx) => {
+
+            await ctx.reply(
+                "🏓 Pong!",
+            );
+        },
+});
+
+
+/* =========================================================
+ * REGISTER
+ * ========================================================= */
+
+register({
+    name: "register",
+
+    aliases: [
+        "add",
+    ],
+
+    usage:
+        "!register",
+
+    description:
+        "Adds an item using guided registration",
+
+    handler:
+        async (ctx) => {
+
+            pending.set(
+                ctx.jid,
+                {
+                    step: "name",
+                    draft: {},
+                },
+            );
+
+            await ctx.reply(
+                [
+                    "📦 Registering a new item.",
+                    "",
+                    "What is the item name?",
+                    `${config.prefix}cancel to abort.`,
+                ].join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * DELETE
+ *
+ * !delete <id>
+ * !delete <id> <id> <id>
+ * !delete <id>,<id>,<id>
+ * !delete class <category>
+ * ========================================================= */
+
+register({
+    name: "delete",
+
+    aliases: [
+        "remove",
+    ],
+
+    usage:
+        "!delete <id...> OR !delete class <category>",
+
+    description:
+        "Deletes one or multiple items, or moves a category to nonclass",
+
+    handler:
+        async (ctx) => {
+
+            /*
+             * -------------------------------------------------
+             * !delete class <category>
+             * -------------------------------------------------
+             */
+
+            if (
+                ctx.args[0]?.toLowerCase() ===
+                "class"
+            ) {
+
+                const category =
+                    ctx.args
+                        .slice(1)
+                        .join(" ")
+                        .trim()
+                        .toLowerCase();
+
+                if (!category) {
+
+                    await ctx.reply(
+                        "Usage: !delete class <category>",
+                    );
+
+                    return;
+                }
+
+                if (category === "nonclass") {
+
+                    await ctx.reply(
+                        "The nonclass category cannot be deleted.",
+                    );
+
+                    return;
+                }
+
+                const user =
+                    await getDbUser(ctx.jid);
+
+                const items =
+                    await listItems(user.id);
+
+                const classItems =
+                    items.filter(
+                        (item) =>
+                            item.category ===
+                            category,
+                    );
+
+                if (classItems.length === 0) {
+
+                    await ctx.reply(
+                        `Category "${category}" not found or empty.`,
+                    );
+
+                    return;
+                }
+
+                /*
+                 * Store the entire operation as ONE undo action.
+                 */
+
+                await saveUndo(
+                    user.id,
+                    {
+                        type: "batch-update",
+
+                        items:
+                            classItems.map(
+                                (item) => ({
+                                    itemId:
+                                        item.id,
+
+                                    before:
+                                        structuredClone(item),
+                                }),
+                            ),
+                    },
+                );
+
+                for (
+                    const item of classItems
+                ) {
+
+                    await updateItem(
+                        user.id,
+                        item.id,
+                        {
+                            category:
+                                "nonclass",
+                        },
+                    );
+                }
+
+                await ctx.reply(
+                    [
+                        `🗑️ Category "${category}" deleted.`,
+                        "",
+                        `${classItems.length} item(s) moved to nonclass.`,
+                    ].join("\n"),
+                );
+
+                return;
+            }
+
+
+            /*
+             * -------------------------------------------------
+             * !delete <id...>
+             * -------------------------------------------------
+             */
+
+            const ids =
+                parseIds(ctx.args);
+
+            if (ids.length === 0) {
+
+                await ctx.reply(
+                    "Usage: !delete <id...>",
+                );
+
+                return;
+            }
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items: WishlistItem[] = [];
+
+            for (const id of ids) {
+
+                const item =
+                    await findItem(
+                        user.id,
+                        id,
+                    );
+
+                if (item) {
+                    items.push(item);
+                }
+            }
+
+            if (items.length === 0) {
+
+                await ctx.reply(
+                    "No valid items found.",
+                );
+
+                return;
+            }
+
+
+            /*
+             * Store all deleted items in ONE undo action.
+             */
+
+            await saveUndo(
+                user.id,
+                {
+                    type: "batch-delete",
+
+                    items:
+                        items.map(
+                            (item) =>
+                                structuredClone(item),
+                        ),
+                },
+            );
+
+
+            for (const item of items) {
+
+                await deleteItem(
+                    user.id,
+                    item.id,
+                );
+            }
+
+
+            await ctx.reply(
+                [
+                    `🗑️ Deleted ${items.length} item(s):`,
+                    "",
+                    ...items.map(
+                        (item) =>
+                            `• [${item.id}] ${item.name}`,
+                    ),
+                ].join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * SHOW
+ * ========================================================= */
+
+register({
+    name: "show",
+
+    usage:
+        "!show <id>",
+
+    description:
+        "Shows complete information about an item",
+
+    handler:
+        async (ctx) => {
+
+            const id =
+                requireId(ctx);
+
+            if (!id) {
+
+                await ctx.reply(
+                    "Usage: !show <id>",
+                );
+
+                return;
+            }
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const item =
+                await findItem(
+                    user.id,
+                    id,
+                );
+
+            if (!item) {
+
+                await ctx.reply(
+                    "Item not found.",
+                );
+
+                return;
+            }
+
+            await ctx.reply(
+                formatItem(item),
+                {
+                    imageUrl:
+                        item.imageUrl,
+                },
+            );
+        },
+});
+
+
+/* =========================================================
+ * CLEAR
+ * ========================================================= */
+
+register({
+    name: "clear",
+
+    usage:
+        "!clear",
+
+    description:
+        "Deletes all messages previously sent by the bot in this chat",
+
+    handler:
+        async (ctx) => {
+
+            const messages =
+                getSentMessages(ctx.jid);
+
+            let deleted = 0;
+
+            for (
+                const message of messages
+            ) {
+
+                try {
+
+                    await ctx.socket.sendMessage(
+                        ctx.jid,
+                        {
+                            delete:
+                                message.key,
+                        },
+                    );
+
+                    forgetSentMessage(
+                        ctx.jid,
+                        message.key.id ??
+                            undefined,
+                    );
+
+                    deleted++;
+
+                } catch (error) {
+
+                    console.error(
+                        `[CLEAR ERROR] Failed to delete ${message.key.id}:`,
+                        error,
+                    );
+                }
+            }
+
+            clearSentMessages(
+                ctx.jid,
+            );
+
+            await ctx.reply(
+                `🧹 Cleared ${deleted} bot message(s).`,
+            );
+        },
+});
+
+
+/* =========================================================
+ * BUY
+ * ========================================================= */
+
+register({
+    name: "buy",
+
+    usage:
+        "!buy <id>",
+
+    description:
+        "Marks an item as bought",
+
+    handler:
+        async (ctx) => {
+
+            const id =
+                requireId(ctx);
+
+            if (!id) {
+
+                await ctx.reply(
+                    "Usage: !buy <id>",
+                );
+
+                return;
+            }
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const item =
+                await findItem(
+                    user.id,
+                    id,
+                );
+
+            if (!item) {
+
+                await ctx.reply(
+                    "Item not found.",
+                );
+
+                return;
+            }
+
+            const updated =
+                await updateItem(
+                    user.id,
+                    id,
+                    {
+                        bought: true,
+                    },
+                );
+
+            await ctx.reply(
+                `🎉 Bought: ${updated?.name ?? item.name}`,
+            );
+        },
+});
+
+
+/* =========================================================
+ * UNBUY
+ * ========================================================= */
+
+register({
+    name: "unbuy",
+
+    usage:
+        "!unbuy <id>",
+
+    description:
+        "Marks an item as not bought",
+
+    handler:
+        async (ctx) => {
+
+            const id =
+                requireId(ctx);
+
+            if (!id) {
+
+                await ctx.reply(
+                    "Usage: !unbuy <id>",
+                );
+
+                return;
+            }
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const item =
+                await findItem(
+                    user.id,
+                    id,
+                );
+
+            if (!item) {
+
+                await ctx.reply(
+                    "Item not found.",
+                );
+
+                return;
+            }
+
+            await updateItem(
+                user.id,
+                id,
+                {
+                    bought: false,
+                },
+            );
+
+            await ctx.reply(
+                `Returned to wishlist: ${item.name}`,
+            );
+        },
+});
+
+
+/* =========================================================
+ * LIST
+ * ========================================================= */
+
+register({
+    name: "list",
+
+    usage:
+        "!list [category]",
+
+    description:
+        "Lists items from a category or all items",
+
+    handler:
+        async (ctx) => {
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            let items =
+                await listItems(user.id);
+
+            const category =
+                ctx.rest
+                    .trim()
+                    .toLowerCase();
+
+            if (category) {
+
+                items =
+                    items.filter(
+                        (item) =>
+                            item.category ===
+                            category,
+                    );
+            }
+
+            if (items.length === 0) {
+
+                await ctx.reply(
+                    "Nothing found.",
+                );
+
+                return;
+            }
+
+            await ctx.reply(
+                items
+                    .map(
+                        (item) =>
+                            [
+                                `${item.bought ? "✅" : "▫️"} [${item.id}] ${item.name}`,
+                                `💰 ${formatMoney(item.price)}`,
+                                `${priorityLabel(item.priority)}`,
+                            ].join(" | "),
+                    )
+                    .join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * CLASSES
+ * ========================================================= */
+
+register({
+    name: "classes",
+
+    aliases: [
+        "class",
+        "categories",
+    ],
+
+    usage:
+        "!classes",
+
+    description:
+        "Lists all available categories",
+
+    handler:
+        async (ctx) => {
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items =
+                await listItems(user.id);
+
+            const categories =
+                [
+                    ...new Set(
+                        items.map(
+                            (item) =>
+                                item.category,
+                        ),
+                    ),
+                ].sort();
+
+            if (categories.length === 0) {
+
+                await ctx.reply(
+                    "No categories found.",
+                );
+
+                return;
+            }
+
+            await ctx.reply(
+                [
+                    "📂 Classes:",
+                    "",
+                    ...categories.map(
+                        (category) =>
+                            `• ${category}`,
+                    ),
+                ].join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * BUDGET
+ * ========================================================= */
+
+register({
+    name: "budget",
+
+    usage:
+        "!budget <value>",
+
+    description:
+        "Sets your available budget",
+
+    handler:
+        async (ctx) => {
+
+            const value =
+                ctx.rest.trim();
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            if (!value) {
+
+                await ctx.reply(
+                    `Current budget: ${formatMoney(user.budget)}`,
+                );
+
+                return;
+            }
+
+            const budget =
+                parsePrice(value);
+
+            if (
+                budget === null ||
+                budget < 0
+            ) {
+
+                await ctx.reply(
+                    "Invalid budget.",
+                );
+
+                return;
+            }
+
+            await updateBudget(
+                user.id,
+                budget,
+            );
+
+            await ctx.reply(
+                `Budget set to ${formatMoney(budget)}`,
+            );
+        },
+});
+
+
+/* =========================================================
+ * SEARCH
+ * ========================================================= */
+
+register({
+    name: "search",
+
+    usage:
+        "!search <term>",
+
+    description:
+        "Searches by name, category or note",
+
+    handler:
+        async (ctx) => {
+
+            const term =
+                ctx.rest
+                    .trim()
+                    .toLowerCase();
+
+            if (!term) {
+
+                await ctx.reply(
+                    "Usage: !search <term>",
+                );
+
+                return;
+            }
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items =
+                await searchItems(
+                    user.id,
+                    term,
+                );
+
+            await ctx.reply(
+                items.length
+                    ? items
+                        .map(formatItem)
+                        .join("\n\n")
+                    : `Nothing found for "${term}".`,
+            );
+        },
+});
+
+
+/* =========================================================
+ * RANDOM
+ * ========================================================= */
+
+register({
+    name: "random",
+
+    usage:
+        "!random",
+
+    description:
+        "Picks a random open item",
+
+    handler:
+        async (ctx) => {
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items =
+                (
+                    await listItems(user.id)
+                ).filter(
+                    (item) =>
+                        !item.bought,
+                );
+
+            if (items.length === 0) {
+
+                await ctx.reply(
+                    "No open items.",
+                );
+
+                return;
+            }
+
+            const item =
+                items[
+                    Math.floor(
+                        Math.random() *
+                        items.length,
+                    )
+                ]!;
+
+            await ctx.reply(
+                `How about this?\n\n${formatItem(item)}`,
+                {
+                    imageUrl:
+                        item.imageUrl,
+                },
+            );
+        },
+});
+
+
+/* =========================================================
+ * SUMMARY
+ * ========================================================= */
+
+register({
+    name: "summary",
+
+    usage:
+        "!summary",
+
+    description:
+        "Shows a complete wishlist summary",
+
+    handler:
+        async (ctx) => {
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items =
+                await listItems(user.id);
+
+            const open =
+                items.filter(
+                    (item) =>
+                        !item.bought,
+                );
+
+            const bought =
+                items.filter(
+                    (item) =>
+                        item.bought,
+                );
+
+            const total =
+                (list: WishlistItem[]) =>
+                    list.reduce(
+                        (
+                            sum,
+                            item,
+                        ) =>
+                            sum +
+                            (
+                                item.price ??
+                                0
+                            ),
+                        0,
+                    );
+
+            const critical =
+                open.filter(
+                    (item) =>
+                        item.priority === 4,
+                );
+
+            const high =
+                open.filter(
+                    (item) =>
+                        item.priority === 3,
+                );
+
+            const openTotal =
+                total(open);
+
+            const priorityTotal =
+                total(critical) +
+                total(high);
+
+            const remaining =
+                user.budget === null
+                    ? null
+                    : user.budget -
+                    openTotal;
+
+            await ctx.reply(
+                [
+                    "*📦 My WishBox Summary*",
+                    "",
+                    `Total items: ${items.length}`,
+                    `Open: ${open.length} (${formatMoney(openTotal)})`,
+                    `Bought: ${bought.length} (${formatMoney(total(bought))})`,
+                    "",
+                    `🚨 Critical: ${critical.length} (${formatMoney(total(critical))})`,
+                    `🔴 High: ${high.length} (${formatMoney(total(high))})`,
+                    `🔥 Critical + High: ${formatMoney(priorityTotal)}`,
+                    "",
+                    `💰 Budget: ${formatMoney(user.budget)}`,
+                    `📉 Remaining after all open items: ${formatMoney(remaining)}`,
+                ].join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * CANCEL
+ * ========================================================= */
+
+register({
+    name: "cancel",
+
+    usage:
+        "!cancel",
+
+    description:
+        "Cancels the current guided flow",
+
+    handler:
+        async (ctx) => {
+
+            const cancelled =
+                pending.delete(ctx.jid);
+
+            await ctx.reply(
+                cancelled
+                    ? "Flow cancelled."
+                    : "No active flow.",
+            );
+        },
+});
+
+
+/* =========================================================
+ * MOVE
+ *
+ * !move 1 car
+ * !move 1 2 3 car
+ * !move 1,2,3 car
+ * !move 1 2 3 pc gamer
+ * ========================================================= */
+
+register({
+    name: "move",
+
+    usage:
+        "!move <id...> <category>",
+
+    description:
+        "Moves one or multiple items to another category",
+
+    handler:
+        async (ctx) => {
+
+            if (ctx.args.length < 2) {
+
+                await ctx.reply(
+                    "Usage: !move <id...> <category>",
+                );
+
+                return;
+            }
+
+
+            /*
+             * Determine where the IDs end
+             * and the category begins.
+             */
+
+            let idEnd = 0;
+
+            while (
+                idEnd < ctx.args.length &&
+                isIdArgument(
+                    ctx.args[idEnd]!,
+                )
+            ) {
+
+                idEnd++;
+            }
+
+
+            if (
+                idEnd === 0 ||
+                idEnd >= ctx.args.length
+            ) {
+
+                await ctx.reply(
+                    "Usage: !move <id...> <category>",
+                );
+
+                return;
+            }
+
+
+            const ids =
+                parseIds(
+                    ctx.args.slice(
+                        0,
+                        idEnd,
+                    ),
+                );
+
+
+            const category =
+                ctx.args
+                    .slice(idEnd)
+                    .join(" ")
+                    .trim()
+                    .toLowerCase();
+
+
+            if (
+                ids.length === 0 ||
+                !category
+            ) {
+
+                await ctx.reply(
+                    "Usage: !move <id...> <category>",
+                );
+
+                return;
+            }
+
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const items: WishlistItem[] = [];
+
+
+            for (const id of ids) {
+
+                const item =
+                    await findItem(
+                        user.id,
+                        id,
+                    );
+
+                if (item) {
+                    items.push(item);
+                }
+            }
+
+
+            if (items.length === 0) {
+
+                await ctx.reply(
+                    "No valid items found.",
+                );
+
+                return;
+            }
+
+
+            /*
+             * Ignore items that are already
+             * in the target category.
+             */
+
+            const movableItems =
+                items.filter(
+                    (item) =>
+                        item.category !==
+                        category,
+                );
+
+
+            if (movableItems.length === 0) {
+
+                await ctx.reply(
+                    `All selected items are already in "${category}".`,
+                );
+
+                return;
+            }
+
+
+            /*
+             * Save the COMPLETE operation
+             * as one undo action.
+             */
+
+            await saveUndo(
+                user.id,
+                {
+                    type: "batch-update",
+
+                    items:
+                        movableItems.map(
+                            (item) => ({
+                                itemId:
+                                    item.id,
+
+                                before:
+                                    structuredClone(item),
+                            }),
+                        ),
+                },
+            );
+
+
+            for (
+                const item of movableItems
+            ) {
+
+                await updateItem(
+                    user.id,
+                    item.id,
+                    {
+                        category,
+                    },
+                );
+            }
+
+
+            await ctx.reply(
+                [
+                    `📦 Moved ${movableItems.length} item(s) to "${category}":`,
+                    "",
+                    ...movableItems.map(
+                        (item) =>
+                            `• [${item.id}] ${item.name}: ${item.category} → ${category}`,
+                    ),
+                ].join("\n"),
+            );
+        },
+});
+
+
+/* =========================================================
+ * UNDO
+ * ========================================================= */
+
+register({
+    name: "undo",
+
+    usage:
+        "!undo",
+
+    description:
+        "Undoes the last modification",
+
+    handler:
+        async (ctx) => {
+
+            const user =
+                await getDbUser(ctx.jid);
+
+            const action =
+                await consumeUndo(user.id);
+
+            if (!action) {
+
+                await ctx.reply(
+                    "Nothing to undo.",
+                );
+
+                return;
+            }
+
+
+            try {
+
+                switch (action.type) {
+
+                    /* -----------------------------------------
+                     * SINGLE UPDATE
+                     * ----------------------------------------- */
+
+                    case "update": {
+
+                        const current =
+                            await findItem(
+                                user.id,
+                                action.itemId,
+                            );
+
+                        if (!current) {
+
+                            await ctx.reply(
+                                "Cannot undo: item no longer exists.",
+                            );
+
+                            return;
+                        }
+
+                        await updateItem(
+                            user.id,
+                            action.itemId,
+                            {
+                                name:
+                                    action.before.name,
+
+                                price:
+                                    action.before.price,
+
+                                url:
+                                    action.before.url,
+
+                                imageUrl:
+                                    action.before.imageUrl,
+
+                                category:
+                                    action.before.category,
+
+                                priority:
+                                    action.before.priority,
+
+                                bought:
+                                    action.before.bought,
+
+                                note:
+                                    action.before.note,
+                            },
+                        );
+
+                        await ctx.reply(
+                            [
+                                `↩️ Undo: [${action.itemId}] ${action.before.name}`,
+                                "",
+                                `📂 Restored category: ${action.before.category}`,
+                            ].join("\n"),
+                        );
+
+                        return;
+                    }
+
+
+                    /* -----------------------------------------
+                     * SINGLE DELETE
+                     * ----------------------------------------- */
+
+                    case "delete": {
+
+                        const existing =
+                            await findItem(
+                                user.id,
+                                action.item.id,
+                            );
+
+                        if (existing) {
+
+                            await ctx.reply(
+                                `Item [${action.item.id}] already exists.`,
+                            );
+
+                            return;
+                        }
+
+                        await restoreItem(
+                            user.id,
+                            action.item,
+                        );
+
+                        await ctx.reply(
+                            `↩️ Restored: [${action.item.id}] ${action.item.name}`,
+                        );
+
+                        return;
+                    }
+
+
+                    /* -----------------------------------------
+                     * CREATE
+                     * ----------------------------------------- */
+
+                    case "create": {
+
+                        const existing =
+                            await findItem(
+                                user.id,
+                                action.item.id,
+                            );
+
+                        if (!existing) {
+
+                            await ctx.reply(
+                                "Cannot undo: item no longer exists.",
+                            );
+
+                            return;
+                        }
+
+                        await deleteItem(
+                            user.id,
+                            action.item.id,
+                        );
+
+                        await ctx.reply(
+                            `↩️ Undone: [${action.item.id}] ${action.item.name} removed.`,
+                        );
+
+                        return;
+                    }
+
+
+                    /* -----------------------------------------
+                     * BATCH UPDATE
+                     *
+                     * Used by:
+                     *
+                     * !move 1 2 3 cars
+                     * !delete class cars
+                     * ----------------------------------------- */
+
+                    case "batch-update": {
+
+                        let restored = 0;
+
+                        for (
+                            const entry of action.items
+                        ) {
+
+                            const current =
+                                await findItem(
+                                    user.id,
+                                    entry.itemId,
+                                );
+
+                            if (!current) {
+                                continue;
+                            }
+
+                            await updateItem(
+                                user.id,
+                                entry.itemId,
+                                {
+                                    name:
+                                        entry.before.name,
+
+                                    price:
+                                        entry.before.price,
+
+                                    url:
+                                        entry.before.url,
+
+                                    imageUrl:
+                                        entry.before.imageUrl,
+
+                                    category:
+                                        entry.before.category,
+
+                                    priority:
+                                        entry.before.priority,
+
+                                    bought:
+                                        entry.before.bought,
+
+                                    note:
+                                        entry.before.note,
+                                },
+                            );
+
+                            restored++;
+                        }
+
+
+                        await ctx.reply(
+                            [
+                                `↩️ Undo: restored ${restored} item(s).`,
+                                "",
+                                ...action.items.map(
+                                    (entry) =>
+                                        `• [${entry.itemId}] ${entry.before.name}: restored to "${entry.before.category}"`,
+                                ),
+                            ].join("\n"),
+                        );
+
+                        return;
+                    }
+
+
+                    /* -----------------------------------------
+                     * BATCH DELETE
+                     *
+                     * Used by:
+                     *
+                     * !delete 1 2 3
+                     * ----------------------------------------- */
+
+                    case "batch-delete": {
+
+                        let restored = 0;
+
+                        for (
+                            const item of action.items
+                        ) {
+
+                            const existing =
+                                await findItem(
+                                    user.id,
+                                    item.id,
+                                );
+
+                            if (existing) {
+                                continue;
+                            }
+
+                            await restoreItem(
+                                user.id,
+                                item,
+                            );
+
+                            restored++;
+                        }
+
+
+                        await ctx.reply(
+                            [
+                                `↩️ Undo: restored ${restored} item(s).`,
+                                "",
+                                ...action.items.map(
+                                    (item) =>
+                                        `• [${item.id}] ${item.name}`,
+                                ),
+                            ].join("\n"),
+                        );
+
+                        return;
+                    }
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "[UNDO ERROR]",
+                    error,
+                );
+
+                await ctx.reply(
+                    "❌ Failed to undo the last action.",
+                );
+            }
+        },
+});
+
+
+/* =========================================================
+ * HELP
+ * ========================================================= */
+
+register({
+    name: "help",
+
+    aliases: [
+        "commands",
+    ],
+
+    usage:
+        "!help",
+
+    description:
+        "Shows all commands",
+
+    handler:
+        async (ctx) => {
+
+            const output = [
+                "*📦 My WishBox*",
+                "",
+                ...list().map(
+                    (command) =>
+                        `${command.usage}\n${command.description}`,
+                ),
+                "",
+                "*Priority*",
+                "1 🟢 Low",
+                "2 🟡 Medium",
+                "3 🔴 High",
+                "4 🚨 Critical",
+            ];
+
+            await ctx.reply(
+                output.join("\n\n"),
+            );
+        },
+});
+
+./"src"/"commands/router.ts"
+import type {
+    WAMessage,
+    WASocket,
+} from "baileys";
+
+export interface ReplyOptions {
+    imageUrl?: string | null;
+}
+
+export interface CommandContext {
+    socket: WASocket;
+
+    message: WAMessage;
+
+    jid: string;
+
+    args: string[];
+
+    rest: string;
+
+    reply: (
+        text: string,
+        options?: ReplyOptions,
+    ) => Promise<void>;
+}
+
+export interface Command {
+    name: string;
+
+    aliases?: string[];
+
+    usage: string;
+
+    description: string;
+
+    handler: (
+        ctx: CommandContext,
+    ) => Promise<void>;
+}
+
+const commands =
+    new Map<string, Command>();
+
+export function register(
+    command: Command,
+): void {
+
+    const name =
+        command.name.toLowerCase();
+
+    commands.set(
+        name,
+        command,
+    );
+
+    for (
+        const alias
+        of command.aliases ?? []
+    ) {
+
+        commands.set(
+            alias.toLowerCase(),
+            command,
+        );
+    }
+}
+
+export function resolve(
+    name: string,
+): Command | undefined {
+
+    return commands.get(
+        name.toLowerCase(),
+    );
+}
+
+export function list(): Command[] {
+
+    return [
+        ...new Set(
+            commands.values(),
+        ),
+    ];
+}
+

@@ -1,0 +1,19 @@
+services:
+  my-wishbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: my-wishbox
+
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+
+    volumes:
+      - ./auth:/app/auth
+      - ./data:/app/data
+
+    stdin_open: true
+    tty: true

@@ -1,0 +1,5 @@
+CREATE USER wishbox WITH PASSWORD '';
+
+CREATE DATABASE wishbox OWNER wishbox;
+
+psql -U wishbox -d wishbox
