@@ -441,13 +441,13 @@ async function continueRegister(
 
                     "",
 
-                    "1 🟢 Low",
+                    "1 Low",
 
-                    "2 🟡 Medium",
+                    "2 Medium",
 
-                    "3 🔴 High",
+                    "3 High",
 
-                    "4 🚨 Critical",
+                    "4 Critical",
 
                 ].join("\n"),
             );
@@ -740,13 +740,13 @@ async function continueEdit(
 
                     "New priority:",
 
-                    "1 🟢 Low",
+                    "1 Low",
 
-                    "2 🟡 Medium",
+                    "2 Medium",
 
-                    "3 🔴 High",
+                    "3 High",
 
-                    "4 🚨 Critical",
+                    "4 Critical",
 
                 ].join("\n"),
             );
@@ -873,7 +873,7 @@ async function continueEdit(
             if (!updated) {
 
                 await ctx.reply(
-                    "❌ Item disappeared while editing.",
+                    "Item disappeared while editing.",
                 );
 
                 return true;
@@ -980,7 +980,7 @@ register({
         ) => {
 
             await ctx.reply(
-                "🏓 Pong!",
+                "Pong!",
             );
         },
 });
@@ -1130,7 +1130,7 @@ register({
             await ctx.reply(
                 [
 
-                    `✏️ Editing [${item.id}] ${item.name}`,
+                    `Editing [${item.id}] ${item.name}`,
 
                     "",
 
@@ -1295,7 +1295,7 @@ register({
                 await ctx.reply(
                     [
 
-                        `📂 Category "${category}" deleted.`,
+                        `Category "${category}" deleted.`,
 
                         "",
 
@@ -1410,7 +1410,7 @@ register({
             await ctx.reply(
                 [
 
-                    `🗑️ Deleted ${items.length} item(s):`,
+                    `Deleted ${items.length} item(s):`,
 
                     "",
 
@@ -1669,7 +1669,7 @@ register({
 
 
             await ctx.reply(
-                `🎉 Bought: ${item.name}`,
+                `Bought: ${item.name}`,
             );
         },
 });
@@ -1764,7 +1764,7 @@ register({
 
 
             await ctx.reply(
-                `↩️ Returned to wishlist: ${item.name}`,
+                `Returned to wishlist: ${item.name}`,
             );
         },
 });
@@ -1842,9 +1842,9 @@ register({
                         ) =>
                             [
 
-                                `${item.bought ? "✅" : "▫️"} [${item.id}] ${item.name}`,
+                                `[${item.id}] ${item.name}`,
 
-                                `💰 ${formatMoney(item.price)}`,
+                                `${formatMoney(item.price)}`,
 
                                 `${priorityLabel(item.priority)}`,
 
@@ -1923,7 +1923,7 @@ register({
             await ctx.reply(
                 [
 
-                    "📂 Classes:",
+                    "Classes:",
 
                     "",
 
@@ -2268,7 +2268,7 @@ register({
             await ctx.reply(
                 [
 
-                    "*📦 My WishBox Summary*",
+                    "*My WishBox Summary* 📦 ",
 
                     "",
 
@@ -2280,17 +2280,17 @@ register({
 
                     "",
 
-                    `🚨 Critical: ${critical.length} (${formatMoney(total(critical))})`,
+                    `Critical: ${critical.length} (${formatMoney(total(critical))})`,
 
-                    `🔴 High: ${high.length} (${formatMoney(total(high))})`,
+                    `High: ${high.length} (${formatMoney(total(high))})`,
 
-                    `🔥 Critical + High: ${formatMoney(priorityTotal)}`,
+                    `Critical + High: ${formatMoney(priorityTotal)}`,
 
                     "",
 
-                    `💰 Budget: ${formatMoney(user.budget)}`,
+                    `Budget: ${formatMoney(user.budget)}`,
 
-                    `📉 Remaining after all open items: ${formatMoney(remaining)}`,
+                    `Remaining after all open items: ${formatMoney(remaining)}`,
 
                 ].join("\n"),
             );
@@ -2513,7 +2513,7 @@ register({
             await ctx.reply(
                 [
 
-                    `📦 Moved ${movableItems.length} item(s) to "${category}":`,
+                    `Moved ${movableItems.length} item(s) to "${category}":`,
 
                     "",
 
@@ -2608,7 +2608,7 @@ register({
 
 
                         await ctx.reply(
-                            `↩️ Undone: [${action.item.id}] ${action.item.name} removed.`,
+                            `Undone: [${action.item.id}] ${action.item.name} removed.`,
                         );
 
 
@@ -2646,7 +2646,7 @@ register({
 
 
                         await ctx.reply(
-                            `↩️ Restored: [${action.item.id}] ${action.item.name}`,
+                            `Restored: [${action.item.id}] ${action.item.name}`,
                         );
 
 
@@ -2712,11 +2712,11 @@ register({
                         await ctx.reply(
                             [
 
-                                `↩️ Undo: [${action.itemId}] ${action.before.name}`,
+                                `Undo: [${action.itemId}] ${action.before.name}`,
 
                                 "",
 
-                                `📂 Restored category: ${action.before.category}`,
+                                `Restored category: ${action.before.category}`,
 
                             ].join("\n"),
                         );
@@ -2793,7 +2793,7 @@ register({
                         await ctx.reply(
                             [
 
-                                `↩️ Undo: restored ${restored} item(s).`,
+                                `Undo: restored ${restored} item(s).`,
 
                                 "",
 
@@ -2853,7 +2853,7 @@ register({
                         await ctx.reply(
                             [
 
-                                `↩️ Undo: restored ${restored} item(s).`,
+                                `Undo: restored ${restored} item(s).`,
 
                                 "",
 
@@ -2883,7 +2883,7 @@ register({
 
 
                 await ctx.reply(
-                    "❌ Failed to undo the last action.",
+                    "Failed to undo the last action.",
                 );
             }
         },
@@ -2952,7 +2952,8 @@ register({
 
             const output = [
 
-                "*📦 My WishBox*",
+                "*My WishBox* 📦",
+                "use your own number to manage your wishlist",
 
                 "",
 
@@ -2962,19 +2963,6 @@ register({
                     ) =>
                         `${command.usage}\n${command.description}`,
                 ),
-
-                "",
-
-                "*Priority*",
-
-                "1 🟢 Low",
-
-                "2 🟡 Medium",
-
-                "3 🔴 High",
-
-                "4 🚨 Critical",
-
             ];
 
 
